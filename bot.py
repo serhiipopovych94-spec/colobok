@@ -11,6 +11,7 @@ import tempfile
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import FSInputFile, Message
+from aiogram.utils.chat_action import ChatActionSender
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]  # ключ от @BotFather, задаётся в настройках хостинга
 SIZE = 640          # диаметр кружка в пикселях (максимум у Telegram)
@@ -59,17 +60,19 @@ async def handle_video(message: Message):
         return
 
     status = await message.answer("Делаю кружок… ⏳")
-    with tempfile.TemporaryDirectory() as tmp:
-        src = os.path.join(tmp, "in")
-        dst = os.path.join(tmp, "out.mp4")
-        try:
-            await bot.download(media, destination=src)
-            await asyncio.to_thread(make_circle, src, dst)
-            await message.answer_video_note(FSInputFile(dst), length=SIZE)
-            await status.delete()
-        except Exception:
-            logging.exception("Не получилось обработать видео")
-            await status.edit_text("Что-то пошло не так 😕 Попробуй другое видео.")
+    # Пока идёт обработка, в чате виден статус «записывает видео…»
+    async with ChatActionSender.record_video_note(bot=bot, chat_id=message.chat.id):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "in")
+            dst = os.path.join(tmp, "out.mp4")
+            try:
+                await bot.download(media, destination=src)
+                await asyncio.to_thread(make_circle, src, dst)
+                await message.answer_video_note(FSInputFile(dst), length=SIZE)
+                await status.delete()
+            except Exception:
+                logging.exception("Не получилось обработать видео")
+                await status.edit_text("Что-то пошло не так 😕 Попробуй другое видео.")
 
 
 @dp.message()
