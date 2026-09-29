@@ -47,8 +47,11 @@ HELP_TEXT = (
     "Не понравилось? Нажми кнопку под кружком — сделаю заново с другой частью кадра, "
     "видео присылать ещё раз не нужно.\n\n"
     "Кружок будет не длиннее 60 секунд — возьму начало видео.\n"
-    "Совет: отправляй видео обычным способом (со сжатием), тогда оно почти всегда влезет в 20 МБ."
+    "Совет: отправляй видео обычным способом (со сжатием), тогда оно почти всегда влезет в 20 МБ.\n\n"
+    "/clear — удалить все сообщения в этом чате (Telegram разрешает удалять только сообщения за последние 48 часов)."
 )
+
+CLEAR_DEPTH = 1000  # сколько последних сообщений чата пытаемся удалить
 
 
 def make_circle(src: str, dst: str, pos: float = 0.5) -> None:
@@ -99,6 +102,54 @@ async def start(message: Message):
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
     await message.answer(HELP_TEXT)
+
+
+@dp.message(Command("clear"))
+async def clear_cmd(message: Message):
+    await message.answer(
+        "Удалить все сообщения в этом чате — видео и кружки? 🧹\n"
+        "Отменить это будет нельзя.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🗑 Да, удалить", callback_data="clear:yes"),
+            InlineKeyboardButton(text="Отмена", callback_data="clear:no"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("clear:"))
+async def on_clear(call: CallbackQuery):
+    chat_id = call.message.chat.id
+    if call.data == "clear:no":
+        await call.answer("Ок, ничего не удаляю")
+        await call.message.delete()
+        return
+    await call.answer("Удаляю…")
+
+    # В личном чате номера сообщений идут подряд, поэтому удаляем все номера
+    # от текущего сообщения вниз. Несуществующие Telegram просто пропускает.
+    last_id = call.message.message_id
+    ids = list(range(last_id, max(0, last_id - CLEAR_DEPTH), -1))
+    for i in range(0, len(ids), 100):  # за один запрос можно удалить максимум 100
+        batch = ids[i:i + 100]
+        try:
+            await bot.delete_messages(chat_id, batch)
+        except Exception:
+            # Если в пачке есть сообщения старше 48 часов, удаляем по одному, что получится
+            deleted_any = False
+            for mid in batch:
+                try:
+                    await bot.delete_message(chat_id, mid)
+                    deleted_any = True
+                except Exception:
+                    pass
+            if not deleted_any:
+                break  # дальше только ещё более старые сообщения — их удалить нельзя
+
+    # Кнопки под удалёнными кружками больше не нужны
+    for key in [k for k in pending if k[0] == chat_id]:
+        pending.pop(key, None)
+
+    await bot.send_message(chat_id, "Готово, чат очищен ✨ Пришли новое видео, и я сделаю кружок ⭕️")
 
 
 @dp.message(F.video | F.document | F.animation)
