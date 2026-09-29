@@ -28,14 +28,24 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 
-# Видео, которые ждут выбора части кадра: id сообщения с кнопками -> file_id видео
-pending: dict[int, str] = {}
+# Видео, для которых показаны кнопки выбора части кадра:
+# (id чата, id сообщения с кнопками) -> (file_id видео, ширина, высота)
+pending: dict[tuple[int, int], tuple[str, int | None, int | None]] = {}
+MAX_PENDING = 2000  # чтобы память не росла бесконечно
+
+
+def remember(chat_id: int, message_id: int, file_id: str, width, height) -> None:
+    pending[(chat_id, message_id)] = (file_id, width, height)
+    while len(pending) > MAX_PENDING:
+        pending.pop(next(iter(pending)))  # выкидываем самое старое
 
 HELP_TEXT = (
     "Как пользоваться ⭕️\n\n"
     "1. Пришли мне видео (до 20 МБ).\n"
     "2. Выбери, какую часть кадра взять: верх, центр или низ.\n"
     "3. Получи готовый кружок!\n\n"
+    "Не понравилось? Нажми кнопку под кружком — сделаю заново с другой частью кадра, "
+    "видео присылать ещё раз не нужно.\n\n"
     "Кружок будет не длиннее 60 секунд — возьму начало видео.\n"
     "Совет: отправляй видео обычным способом (со сжатием), тогда оно почти всегда влезет в 20 МБ."
 )
@@ -110,29 +120,40 @@ async def handle_video(message: Message):
     # Квадратное видео обрезать не нужно — сразу делаем кружок
     if width and height and width == height:
         status = await message.answer("Делаю кружок… ⏳")
-        await process(message.chat.id, media.file_id, 0.5, status)
+        await process(message.chat.id, media.file_id, 0.5, status, width, height)
         return
 
     ask = await message.answer(
         "Какую часть кадра взять в кружок?",
         reply_markup=crop_keyboard(width, height),
     )
-    pending[ask.message_id] = media.file_id
+    remember(message.chat.id, ask.message_id, media.file_id, width, height)
 
 
 @dp.callback_query(F.data.startswith("crop:"))
 async def on_crop_choice(call: CallbackQuery):
     pos = float(call.data.split(":", 1)[1])
-    file_id = pending.pop(call.message.message_id, None)
-    if file_id is None:
+    chat_id = call.message.chat.id
+    saved = pending.pop((chat_id, call.message.message_id), None)
+    if saved is None:
         await call.answer("Это видео уже устарело, пришли его ещё раз 🙏", show_alert=True)
         return
+    file_id, width, height = saved
     await call.answer()
-    status = await call.message.edit_text("Делаю кружок… ⏳")
-    await process(call.message.chat.id, file_id, pos, status)
+
+    if call.message.video_note:
+        # Нажали кнопку под готовым кружком: старый кружок оставляем, но убираем под ним кнопки,
+        # и делаем новый кружок из того же видео
+        await call.message.edit_reply_markup(reply_markup=None)
+        status = await bot.send_message(chat_id, "Переделываю кружок… ⏳")
+    else:
+        # Нажали кнопку под вопросом «Какую часть кадра взять?»
+        status = await call.message.edit_text("Делаю кружок… ⏳")
+
+    await process(chat_id, file_id, pos, status, width, height)
 
 
-async def process(chat_id: int, file_id: str, pos: float, status: Message):
+async def process(chat_id: int, file_id: str, pos: float, status: Message, width=None, height=None):
     # Пока идёт обработка, в чате виден статус «записывает видео…»
     async with ChatActionSender.record_video_note(bot=bot, chat_id=chat_id):
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,7 +162,16 @@ async def process(chat_id: int, file_id: str, pos: float, status: Message):
             try:
                 await bot.download(file_id, destination=src)
                 await asyncio.to_thread(make_circle, src, dst, pos)
-                await bot.send_video_note(chat_id, FSInputFile(dst), length=SIZE)
+                is_square = bool(width and height and width == height)
+                note = await bot.send_video_note(
+                    chat_id,
+                    FSInputFile(dst),
+                    length=SIZE,
+                    # под кружком — кнопки, чтобы переделать его с другой частью кадра
+                    reply_markup=None if is_square else crop_keyboard(width, height),
+                )
+                if not is_square:
+                    remember(chat_id, note.message_id, file_id, width, height)
                 await status.delete()
             except Exception:
                 logging.exception("Не получилось обработать видео")
