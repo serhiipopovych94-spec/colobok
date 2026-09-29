@@ -70,7 +70,7 @@ def crop_keyboard(width: int | None, height: int | None) -> InlineKeyboardMarkup
     elif width and height:
         labels = ("⬆️ Верх", "⏺ Центр", "⬇️ Низ")
     else:
-        labels = ("⬆️ Верх / лево", "⏺ Центр", "⬇️ Низ / право")
+        labels = ("⬆️⬅️", "⏺ Центр", "⬇️➡️")
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=labels[0], callback_data="crop:0"),
         InlineKeyboardButton(text=labels[1], callback_data="crop:0.5"),
@@ -103,6 +103,9 @@ async def handle_video(message: Message):
 
     width = getattr(media, "width", None)
     height = getattr(media, "height", None)
+    # У видео, отправленного файлом, размеров нет — берём пропорции из превью
+    if not (width and height) and getattr(media, "thumbnail", None):
+        width, height = media.thumbnail.width, media.thumbnail.height
 
     # Квадратное видео обрезать не нужно — сразу делаем кружок
     if width and height and width == height:
